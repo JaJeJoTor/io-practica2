@@ -11,14 +11,17 @@ class Morphing():
     La resolución de las imágenes no importa, ya que la redimensionamos más adelante en el preprocesado.
     """
     
-    def __init__(self, img1_path, img2_path, resolucion = 168, reg=0.1, epsilon=0.01, n_iter=1000, num_frames=10):
+    def __init__(self, img1_path, img2_path, resolucion = 168, epsilon=0.01, n_iter=1000, num_frames=10, color= True):
         self.img1 = cv2.imread(img1_path)
         self.img2 = cv2.imread(img2_path)
-        self.img1 = cv2.cvtColor(self.img1, cv2.COLOR_BGR2RGB)
-        self.img2 = cv2.cvtColor(self.img2, cv2.COLOR_BGR2RGB)
+
+        if not color:
+            self.img1 = cv2.cvtColor(self.img1, cv2.COLOR_BGR2GRAY)
+            self.img2 = cv2.cvtColor(self.img2, cv2.COLOR_BGR2GRAY)
 
         self.shape = (resolucion, resolucion)
         self.epsilon = epsilon
+        self.color = color
 
 
     def processing(self, img):
@@ -30,9 +33,6 @@ class Morphing():
         # la matriz de costes tendría 512*512 x 512*512 = 68 mil millones de entradas, 
         # en la RAM ocuparía demasiado espacio.
         img = cv2.resize(img, self.shape)
-        
-        # Convertimos la imagen a escala de grises
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         
         # Convertimos la imagen a float, porque el algoritmo de sinkhorn
         # trata las imagenes como distribuciones de probabilidad. 
@@ -87,12 +87,12 @@ class Morphing():
         return K
             
     
-    def sinkhorn(self, K, n_iter = 100):
+    def sinkhorn(self, img1, img2, K, n_iter = 100):
         '''Implementa el algoritmo de Sinkhorn para obtener la matriz de transporte óptimo.'''
         
         # Procesamos las imágenes para obtener las distribuciones de probabilidad.
-        a = self.processing(self.img1)
-        b = self.processing(self.img2)
+        a = self.processing(img1)
+        b = self.processing(img2)
         
         u = np.ones(len(a))
         v = np.ones(len(b))
@@ -100,8 +100,10 @@ class Morphing():
         for i in tqdm(range(n_iter)):
             u = a / np.dot(K, v)
             v = b / np.dot(K.T, u)
-
-        P = np.diag(u) @ K @ np.diag(v)
+        
+        # En lugar de: P = np.diag(u) @ K @ np.diag(v)
+        # Usamos broadcasting que es O(n²) en vez de O(n³)
+        P = u[:, np.newaxis] * K * v[np.newaxis, :]
 
         return P
     
@@ -138,7 +140,7 @@ class Morphing():
             frame = np.bincount(indices, weights=masas, minlength=self.shape[0] * self.shape[1])
             
             # Normalizar para visualización
-            frame = (frame / frame.max() * 255).astype(np.uint8)
+            frame = (frame / frame.max() * 255 + 1e-9).astype(np.uint8)
             frame = frame.reshape(self.shape)
             frames.append(frame)
         
@@ -147,9 +149,9 @@ class Morphing():
     def save_video(self, frames, output_path='morphing.mp4', fps=30):
         '''Guarda los frames como un video.'''
         
-        height, width = frames[0].shape
+        height, width = frames[0].shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height), isColor=False)
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height), isColor=self.color)
         
         for frame in frames:
             out.write(frame)
@@ -158,7 +160,7 @@ class Morphing():
         print(f"Video guardado en {output_path}")
     
 
-    def run(self, n_iter=100, num_frames=60):
+    def run(self, img1, img2, n_iter=100, num_frames=60):
         '''Ejecuta todo el pipeline de morphing.'''
         
         print("Creando matriz de costes...")
@@ -168,9 +170,45 @@ class Morphing():
         K = self.get_kernel(costs_matrix)
         
         print("Ejecutando Sinkhorn...")
-        P = self.sinkhorn(K, n_iter)
+        P = self.sinkhorn(img1, img2, K, n_iter)
         
         print("Generando video...")
         frames = self.make_video(P, coordenadas, num_frames)
         
         return frames
+    
+    
+    def run_color(self, n_iter= 100, num_frames= 60):
+
+        R1 = self.img1[:, : , 2]
+        R2 = self.img2[:, : , 2]
+        G1 = self.img1[:, : , 1]
+        G2 = self.img2[:, : , 1]
+        B1 = self.img1[:, : , 0]
+        B2 = self.img2[:, : , 0]
+
+        imgs = [[B1, B2],[G1, G2],[R1, R2]]
+
+        frames_colores = []
+
+        for img1, img2 in imgs:
+
+            frames_colores.append(self.run(img1, img2, n_iter, num_frames))
+
+        frames_finales = []
+        for f in range(num_frames):
+
+            frames_finales.append(np.stack([frames_colores[0][f], frames_colores[1][f], frames_colores[2][f]], axis= 2))
+
+        return frames_finales
+
+    
+
+
+
+if __name__ == '__main__':
+
+
+    morphing = Morphing('caras/jesus.jpeg','caras/C3PO.jpeg', resolucion= 128, epsilon= 0.0005, n_iter= 300)
+    frames = morphing.run_color(num_frames= 200, n_iter= 300)
+    morphing.save_video(frames, output_path= 'morphing2.mp4')
